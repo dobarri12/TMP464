@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas Assignment Gantt Chart</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
+    <div class="max-w-7xl mx-auto">
+        <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <div class="flex items-center gap-3 mb-6">
+                <svg class="w-8 h-8 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                    <line x1="16" y1="2" x2="16" y2="6"></line>
+                    <line x1="8" y1="2" x2="8" y2="6"></line>
+                    <line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+                <h1 class="text-3xl font-bold text-gray-800">Canvas Assignment Gantt Chart</h1>
+            </div>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Canvas URL (e.g., https://canvas.instructure.com)
+                    </label>
+                    <input
+                        type="text"
+                        id="canvasUrl"
+                        placeholder="https://your-school.instructure.com"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    />
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        API Access Token
+                    </label>
+                    <input
+                        type="password"
+                        id="apiToken"
+                        placeholder="Your Canvas API token"
+                        class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    />
+                </div>
+                
+                <button
+                    id="loadBtn"
+                    class="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                >
+                    Load Assignments & Syllabi
+                </button>
+            </div>
+            
+            <div id="status" class="hidden mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <p class="text-blue-700 text-sm"></p>
+            </div>
+            
+            <div id="error" class="hidden mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                <p class="text-red-700"></p>
+            </div>
+        </div>
+        
+        <div id="chart" class="hidden bg-white rounded-lg shadow-lg p-6"></div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        
+        let assignments = [];
+        let dateRange = { start: null, end: null };
+
+        async function canvasRequest(canvasUrl, apiToken, endpoint) {
+            const response = await fetch(`${API_BASE}/api/canvas-proxy`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ canvasUrl, apiToken, endpoint }),
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Request failed');
+            }
+
+            return response.json();
+        }
+
+        function showStatus(message) {
+            const status = document.getElementById('status');
+            status.querySelector('p').textContent = message;
+            status.classList.remove('hidden');
+            document.getElementById('error').classList.add('hidden');
+        }
+
+        function showError(message) {
+            const error = document.getElementById('error');
+            error.querySelector('p').textContent = message;
+            error.classList.remove('hidden');
+            document.getElementById('status').classList.add('hidden');
+        }
+
+        function hideMessages() {
+            document.getElementById('status').classList.add('hidden');
+            document.getElementById('error').classList.add('hidden');
+        }
+
+        function parseSyllabusForAssignments(syllabusHtml, courseName, courseId, courseColor) {
+            if (!syllabusHtml) return [];
+            
+            const assignments = [];
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(syllabusHtml, 'text/html');
+            
+            const datePatterns = [
+                /(?:due|submit|deadline).*?(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/gi,
+                /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}).*?(?:due|submit|deadline)/gi,
+                /((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:,?\s+\d{4})?)/gi,
+                /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*(?:\s+\d{4})?)/gi
+            ];
+            
+            const textContent = doc.body.textContent || '';
+            const lines = textContent.split('\n');
+            
+            lines.forEach((line, idx) => {
+                datePatterns.forEach(pattern => {
+                    const matches = [...line.matchAll(pattern)];
+                    matches.forEach(match => {
+                        try {
+                            const dateStr = match[1];
+                            const date = new Date(dateStr);
+                            
+                            if (!isNaN(date.getTime())) {
+                                let name = line.trim();
+                                name = name.replace(match[0], '').trim();
+                                name = name.replace(/^[-:•]\s*/, '').trim();
+                                if (name.length > 100) name = name.substring(0, 100) + '...';
+                                
+                                if (name && date > new Date('2020-01-01')) {
+                                    assignments.push({
+                                        id: `syllabus-${courseId}-${idx}-${date.getTime()}`,
+                                        name: name || 'Syllabus Assignment',
+                                        courseName: courseName,
+                                        courseColor: courseColor,
+                                        dueDate: date,
+                                        unlockDate: null,
+                                        points: null,
+                                        source: 'syllabus'
+                                    });
+                                }
+                            }
+                        } catch (e) {
+                            // Skip invalid dates
+                        }
+                    });
+                });
+            });
+            
+            return assignments;
+        }
+
+        async function fetchCanvasData() {
+            const canvasUrl = document.getElementById('canvasUrl').value.trim().replace(/\/$/, '');
+            const apiToken = document.getElementById('apiToken').value.trim();
+
+            if (!canvasUrl || !apiToken) {
+                showError('Please enter both Canvas URL and API token');
+                return;
+            }
+
+            if (!canvasUrl.startsWith('http://') && !canvasUrl.startsWith('https://')) {
+                showError('Canvas URL must start with https:// or http://');
+                return;
+            }
+
+            document.getElementById('loadBtn').disabled = true;
+            showStatus('Fetching courses...');
+
+            try {
+                const courses = await canvasRequest(
+                    canvasUrl,
+                    apiToken,
+                    '/api/v1/courses?enrollment_state=active&per_page=100'
+                );
+
+                if (!courses || courses.length === 0) {
+                    throw new Error('No active courses found');
+                }
+
+                showStatus(`Found ${courses.length} courses. Fetching assignments...`);
+
+                const allAssignments = [];
+
+                for (const course of courses) {
+                    const courseColor = `hsl(${(course.id * 137.508) % 360}, 70%, 60%)`;
+
+                    try {
+                        const courseAssignments = await canvasRequest(
+                            canvasUrl,
+                            apiToken,
+                            `/api/v1/courses/${course.id}/assignments?per_page=100`
+                        );
+
+                        courseAssignments.forEach(assignment => {
+                            if (assignment.due_at) {
+                                allAssignments.push({
+                                    id: `api-${assignment.id}`,
+                                    name: assignment.name,
+                                    courseName: course.name,
+                                    courseColor: courseColor,
+                                    dueDate: new Date(assignment.due_at),
+                                    unlockDate: assignment.unlock_at ? new Date(assignment.unlock_at) : null,
+                                    points: assignment.points_possible,
+                                    source: 'api'
+                                });
+                            }
+                        });
+
+                        showStatus(`Fetching syllabus for ${course.name}...`);
+                        const courseData = await canvasRequest(
+                            canvasUrl,
+                            apiToken,
+                            `/api/v1/courses/${course.id}?include[]=syllabus_body`
+                        );
+
+                        if (courseData.syllabus_body) {
+                            const syllabusAssignments = parseSyllabusForAssignments(
+                                courseData.syllabus_body,
+                                course.name,
+                                course.id,
+                                courseColor
+                            );
+                            allAssignments.push(...syllabusAssignments);
+                        }
+                    } catch (err) {
+                        console.error(`Error fetching data for ${course.name}:`, err);
+                    }
+                }
+
+                // Remove duplicates
+                const uniqueAssignments = [];
+                const seen = new Set();
+                
+                allAssignments.forEach(assignment => {
+                    const key = `${assignment.courseName}-${assignment.name}-${assignment.dueDate.toDateString()}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        uniqueAssignments.push(assignment);
+                    }
+                });
+
+                uniqueAssignments.sort((a, b) => a.dueDate - b.dueDate);
+
+                if (uniqueAssignments.length > 0) {
+                    const now = new Date();
+                    const earliestDate = uniqueAssignments.reduce((earliest, a) => {
+                        const startDate = a.unlockDate || a.dueDate;
+                        return startDate < earliest ? startDate : earliest;
+                    }, uniqueAssignments[0].unlockDate || uniqueAssignments[0].dueDate);
+                    
+                    const latestDate = uniqueAssignments[uniqueAssignments.length - 1].dueDate;
+                    
+                    dateRange = {
+                        start: earliestDate < now ? earliestDate : now,
+                        end: latestDate,
+                    };
+                }
+
+                assignments = uniqueAssignments;
+                hideMessages();
+                renderChart();
+
+                if (assignments.length === 0) {
+                    showError('No assignments with due dates found');
+                }
+            } catch (err) {
+                showError(err.message);
+                console.error('Error:', err);
+            } finally {
+                document.getElementById('loadBtn').disabled = false;
+            }
+        }
+
+        function calculatePosition(date) {
+            if (!dateRange.start || !dateRange.end) return 0;
+            const total = dateRange.end - dateRange.start;
+            const elapsed = date - dateRange.start;
+            return (elapsed / total) * 100;
+        }
+
+        function formatDate(date) {
+            return date.toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric',
+                year: 'numeric'
+            });
+        }
+
+        function getTimelineMarkers() {
+            if (!dateRange.start || !dateRange.end) return [];
+            
+            const markers = [];
+            const currentDate = new Date(dateRange.start);
+            const endDate = new Date(dateRange.end);
+            
+            while (currentDate <= endDate) {
+                markers.push(new Date(currentDate));
+                currentDate.setDate(currentDate.getDate() + 7);
+            }
+            
+            return markers;
+        }
+
+        function renderChart() {
+            const chart = document.getElementById('chart');
+            chart.classList.remove('hidden');
+
+            const apiCount = assignments.filter(a => a.source === 'api').length;
+            const syllabusCount = assignments.filter(a => a.source === 'syllabus').length;
+
+            const markers = getTimelineMarkers();
+            const markersHtml = markers.map((marker, idx) => {
+                const position = calculatePosition(marker);
+                return `
+                    <div class="absolute top-0 h-full" style="left: ${position}%">
+                        <div class="w-px h-full bg-gray-300"></div>
+                        <div class="text-xs text-gray-600 mt-1 -translate-x-1/2 absolute whitespace-nowrap">
+                            ${marker.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            const assignmentsHtml = assignments.map(assignment => {
+                const startPos = calculatePosition(assignment.unlockDate || assignment.dueDate);
+                const endPos = calculatePosition(assignment.dueDate);
+                const width = assignment.unlockDate ? Math.max(endPos - startPos, 0.5) : 0.5;
+                const isPast = assignment.dueDate < new Date();
+
+                return `
+                    <div class="relative h-16 group">
+                        <div class="absolute left-0 top-0 w-1/4 pr-4 overflow-hidden">
+                            <div class="text-sm font-medium text-gray-800 truncate">${assignment.name}</div>
+                            <div class="text-xs text-gray-600 truncate">${assignment.courseName}</div>
+                        </div>
+                        <div class="absolute left-1/4 right-0 top-0 h-full pl-4">
+                            <div class="relative h-full">
+                                <div class="absolute top-1/2 -translate-y-1/2 h-8 rounded transition-all ${isPast ? 'opacity-50' : ''} ${assignment.source === 'syllabus' ? 'border-2 border-dashed' : ''}"
+                                    style="left: ${startPos}%; width: ${width}%; background-color: ${assignment.courseColor}; min-width: 2px; border-color: ${assignment.source === 'syllabus' ? 'rgba(255,255,255,0.5)' : 'transparent'}">
+                                    <div class="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-white"
+                                        style="background-color: ${assignment.courseColor}"></div>
+                                </div>
+                                <div class="absolute opacity-0 group-hover:opacity-100 bg-gray-900 text-white text-xs rounded p-2 z-10 transition-opacity pointer-events-none whitespace-nowrap"
+                                    style="left: ${endPos}%; top: -3.5rem; transform: translateX(-50%)">
+                                    <div class="font-semibold">${assignment.name}</div>
+                                    <div>Due: ${formatDate(assignment.dueDate)}</div>
+                                    ${assignment.points ? `<div>Points: ${assignment.points}</div>` : ''}
+                                    <div class="text-gray-400 text-xs">Source: ${assignment.source === 'api' ? 'Assignments' : 'Syllabus'}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            const uniqueCourses = [...new Set(assignments.map(a => a.courseName))];
+            const coursesHtml = uniqueCourses.map(courseName => {
+                const assignment = assignments.find(a => a.courseName === courseName);
+                return `
+                    <div class="flex items-center gap-2">
+                        <div class="w-4 h-4 rounded" style="background-color: ${assignment.courseColor}"></div>
+                        <span class="text-sm text-gray-700">${courseName}</span>
+                    </div>
+                `;
+            }).join('');
+
+            chart.innerHTML = `
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-bold text-gray-800">Assignment Timeline (${assignments.length} total)</h2>
+                    <div class="text-sm text-gray-600">${formatDate(dateRange.start)} - ${formatDate(dateRange.end)}</div>
+                </div>
+                <div class="flex gap-4 mb-6 text-sm">
+                    <div class="text-gray-700">${apiCount} from Assignments API</div>
+                    <div class="text-gray-700">${syllabusCount} from Syllabi</div>
+                </div>
+                <div class="relative mb-6 h-12 border-b border-gray-300">${markersHtml}</div>
+                <div class="space-y-2">${assignmentsHtml}</div>
+                <div class="mt-8 pt-6 border-t border-gray-200">
+                    <h3 class="text-sm font-semibold text-gray-700 mb-3">Courses</h3>
+                    <div class="flex flex-wrap gap-3">${coursesHtml}</div>
+                </div>
+            `;
+        }
+
+        document.getElementById('loadBtn').addEventListener('click', fetchCanvasData);
+    </script>
+</body>
+</html>
